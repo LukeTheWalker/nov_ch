@@ -1,0 +1,8 @@
+*.txt
+.vscode
+obj
+bin
+*.sh
+devtools/same_origin_equivalence.cpp
+devtools/equivalence
+report.ncu-rep

@@ -27,6 +27,7 @@ int main (int argc, char **argv){
             int src, dst;
             infile >> src >> dst;
             g[src].push_back(dst);
+            g[dst].push_back(src);
         }
         infile.close();
 
@@ -63,6 +64,14 @@ int main (int argc, char **argv){
             }
             cout << endl;
             if (!found) break;
+        }
+    
+
+        // check if any node is not visited
+        for (int i = 0; i < numNodes; i++) {
+            if (!visited[i]) {
+                cout << "Node " << i << " is not visited" << endl;
+            }
         }
     }
 

@@ -50,15 +50,19 @@ void fill_barabasi_albert (Graph& g, int n, int m, int m0){
 }
 
 void fill_erdos_renyi_graph(Graph &g, int n, int m){
+    // connect each vertice with the next one
+    for (int i = 0; i < n-1; ++i){
+        g[i].push_back(i+1);
+    }
+    g[n-1].push_back(0);
     random_device rd;
     mt19937 gen(rd());
     uniform_int_distribution<> dis(0, n-1);
-    for (int i = 0; i < m; ++i){
+    for (int i = n; i < m; ++i){
         int u = dis(gen);
         int v = dis(gen);
-        if (u == v) {m--; continue;}
+        if (u == v) {i--; continue;}
         g[u].push_back(v);
-        g[v].push_back(u);
     }
 }
 
@@ -66,7 +70,6 @@ void fill_complete_graph(Graph &g, int n){
     for (int i = 0; i < n; ++i){
         for (int j = i+1; j < n; ++j){
             g[i].push_back(j);
-            g[j].push_back(i);
         }
     }
 }
@@ -89,7 +92,7 @@ void write_graph_to_file (Graph &g, string filename){
 }
 
 int main (int argc, char **){
-    int n = 1e3;
+    int n = 5*1e3;
     int max_edges = 1e4;
     // generate sparse random graph
     Graph g(n);

@@ -34,8 +34,6 @@ __global__ void kernel (
         int end = d_nodePtrs[node + 1];
         for (int i = start; i < end; i++){
             int neighbor = d_nodeNeighbors[i];
-            // printf("node: %d, neighbor: %d is visited: %d\n", node, neighbor, d_nodeVisited[neighbor]);
-            // atomic check and set (old == compare ? val : old)
             if (d_nodeVisited[neighbor] == 0 && (atomicCAS(&d_nodeVisited[neighbor], 0, 1)) == 0){
                 int index = atomicAdd(numNextLevelNodes, 1);
                 d_nextLevelNodes[index] = neighbor;
@@ -79,6 +77,8 @@ void kernel_launch (
     err = cudaEventCreate(&start); cuda_err_check(err, __FILE__, __LINE__);
     err = cudaEventCreate(&stop); cuda_err_check(err, __FILE__, __LINE__);
 
+    float total_time = 0;
+
     while (*h_numCurrentLevelNodes > 0){
 
         numBlocks = round_div_up(*h_numCurrentLevelNodes, lws);
@@ -115,8 +115,10 @@ void kernel_launch (
         err = cudaEventElapsedTime(&milliseconds, start, stop); cuda_err_check(err, __FILE__, __LINE__);
         cout << "Time taken for kernel execution: " << milliseconds << " ms " << "with " << numBlocks << " blocks and " << lws << " threads per block" << " at level " << level << " with " << *h_numCurrentLevelNodes << " nodes" << endl;
         level++;
-
+        total_time += milliseconds;
     }
+
+    cout << "Total time taken for kernel execution: " << total_time << " ms" << endl;
 
     err = cudaFree(numNextLevelNodes); cuda_err_check(err, __FILE__, __LINE__);
     err = cudaFree(d_nextLevelNodes); cuda_err_check(err, __FILE__, __LINE__);

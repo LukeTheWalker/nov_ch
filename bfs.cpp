@@ -52,10 +52,10 @@ int main (int argc, char **argv){
             }
         }
 
-        // print all nodes at each level
-        for (int i = 0; i < numNodes; i++) {
-            bool found = false;
+        for (int i = 0; i <= 4; i++) {
             cout << "Level " << i << ": ";
+            // print nodes at level i
+            bool found = false;
             for (int j = 0; j < numNodes; j++) {
                 if (level[j] == i) {
                     cout << j << " ";

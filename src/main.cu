@@ -5,6 +5,8 @@
 #include <fstream>
 #include <algorithm>
 
+#define LOCAL_QUEUE_SIZE 1024
+
 using namespace std;
 using Graph = vector<vector<int> >;
 
@@ -27,6 +29,12 @@ __global__ void kernel (
     int *d_currLevelNodes, int *d_nodeVisited, int * numCurrLevelNodes,
     int *d_nextLevelNodes, int *numNextLevelNodes
     ){
+    extern __shared__ int lmem[];
+    int * local_queue = lmem + 1;
+    int * local_queue_size = lmem;
+    if (threadIdx.x == 0) *local_queue_size = 0;
+    
+    __syncthreads();
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid < *numCurrLevelNodes){
         int node = d_currLevelNodes[tid];
@@ -34,19 +42,40 @@ __global__ void kernel (
         int end = d_nodePtrs[node + 1];
         for (int i = start; i < end; i++){
             int neighbor = d_nodeNeighbors[i];
-            if (d_nodeVisited[neighbor] == 0 && (atomicCAS(&d_nodeVisited[neighbor], 0, 1)) == 0){
-                int index = atomicAdd(numNextLevelNodes, 1);
-                d_nextLevelNodes[index] = neighbor;
+            if (d_nodeVisited[neighbor] == 0){
+                if (d_nodeVisited[neighbor] == 0 && (atomicCAS(&d_nodeVisited[neighbor], 0, 1)) == 0){
+                    int index = -1;
+                    if (*local_queue_size < LOCAL_QUEUE_SIZE){
+                        if ((index = atomicAdd_block(local_queue_size, 1)) < LOCAL_QUEUE_SIZE){
+                            local_queue[index] = neighbor;
+                        }
+                    }
+                    if (index != -1) continue;
+                    index = atomicAdd(numNextLevelNodes, 1);
+                    d_nextLevelNodes[index] = neighbor;
+                }
             }
         }
     }
+    
+
+    __syncthreads();
+    // merge local queue with global queue
+    int number_of_nodes_to_merge_per_thread = *local_queue_size / blockDim.x;
+    int start_index = threadIdx.x * number_of_nodes_to_merge_per_thread;
+    int end_index = start_index + number_of_nodes_to_merge_per_thread;
+    if (threadIdx.x == blockDim.x - 1) end_index = *local_queue_size;
+    int local_index = atomicAdd(numNextLevelNodes, end_index - start_index);
+    for (int i = 0; i < end_index - start_index; i++)
+        d_nextLevelNodes[local_index + i] = local_queue[start_index + i];
+    
 }
 
 void kernel_launch (
     int numNodes, 
     int *d_nodePtrs, int *d_nodeNeighbors, 
     int *d_currLevelNodes, int * numCurrentLevelNodes, 
-    int *d_nodeVisited, int lws = 256
+    int *d_nodeVisited, int lws = 64
     ){
 
     int numBlocks;
@@ -54,7 +83,6 @@ void kernel_launch (
 
     int *d_nextLevelNodes;
     int *numNextLevelNodes;
-    char *something_changed;
     
     int * h_currentLevelNodes;
     err = cudaMallocHost((void**)&h_currentLevelNodes, numNodes * sizeof(int)); cuda_err_check(err, __FILE__, __LINE__);
@@ -64,13 +92,10 @@ void kernel_launch (
 
     err = cudaMalloc((void**)&numNextLevelNodes, sizeof(int)); cuda_err_check(err, __FILE__, __LINE__);
     err = cudaMalloc((void**)&d_nextLevelNodes, numNodes * sizeof(int)); cuda_err_check(err, __FILE__, __LINE__);
-    err = cudaMalloc((void**)&something_changed, sizeof(char)); cuda_err_check(err, __FILE__, __LINE__);
     
     err = cudaMemset(numNextLevelNodes, 0, sizeof(int)); cuda_err_check(err, __FILE__, __LINE__);
 
     int level = 0;
-    cout << "Level " << level << ": 0" << endl;
-    level++;
 
     cudaEvent_t start, stop;
 
@@ -85,12 +110,11 @@ void kernel_launch (
 
         err = cudaMemset(numNextLevelNodes, 0, sizeof(int)); cuda_err_check(err, __FILE__, __LINE__);
         err = cudaMemset(d_nextLevelNodes, 0, numNodes * sizeof(int)); cuda_err_check(err, __FILE__, __LINE__);
-        err = cudaMemset(something_changed, 0, sizeof(char)); cuda_err_check(err, __FILE__, __LINE__);
 
         err = cudaEventRecord(start); cuda_err_check(err, __FILE__, __LINE__);
 
         // cout << "Launching kernel with " << numBlocks << " blocks and " << lws << " threads per block" << endl;
-        kernel<<<numBlocks, lws>>>(numNodes, d_nodePtrs, d_nodeNeighbors, d_currLevelNodes, d_nodeVisited, numCurrentLevelNodes, d_nextLevelNodes, numNextLevelNodes);
+        kernel<<<numBlocks, lws, sizeof(int)*(LOCAL_QUEUE_SIZE+1)>>>(numNodes, d_nodePtrs, d_nodeNeighbors, d_currLevelNodes, d_nodeVisited, numCurrentLevelNodes, d_nextLevelNodes, numNextLevelNodes);
 
         err = cudaEventRecord(stop); cuda_err_check(err, __FILE__, __LINE__);
         err = cudaEventSynchronize(stop); cuda_err_check(err, __FILE__, __LINE__);
@@ -100,29 +124,31 @@ void kernel_launch (
         err = cudaMemcpy(numCurrentLevelNodes, numNextLevelNodes, sizeof(int), cudaMemcpyDeviceToDevice); cuda_err_check(err, __FILE__, __LINE__);
         err = cudaMemcpy(d_currLevelNodes, d_nextLevelNodes, numNodes * sizeof(int), cudaMemcpyDeviceToDevice); cuda_err_check(err, __FILE__, __LINE__);
 
+        int old_numCurrentLevelNodes = *h_numCurrentLevelNodes;
+
         err = cudaMemcpy(h_numCurrentLevelNodes, numCurrentLevelNodes, sizeof(int), cudaMemcpyDeviceToHost); cuda_err_check(err, __FILE__, __LINE__);
         err = cudaMemcpy(h_currentLevelNodes, d_currLevelNodes, *h_numCurrentLevelNodes * sizeof(int), cudaMemcpyDeviceToHost); cuda_err_check(err, __FILE__, __LINE__);
 
         sort(h_currentLevelNodes, h_currentLevelNodes + *h_numCurrentLevelNodes);
 
-        // cout << "numCurrentLevelNodes: " << *h_numCurrentLevelNodes << endl;
-        // cout << "Level " << level << ": ";
+        float milliseconds = 0;
+        err = cudaEventElapsedTime(&milliseconds, start, stop); cuda_err_check(err, __FILE__, __LINE__);
+        cout << "Time taken for kernel execution: " << milliseconds << " ms " << "with " << numBlocks << " blocks and " << lws << " threads per block" << " at level " << level << " with " << old_numCurrentLevelNodes << " nodes" << " generated " << *h_numCurrentLevelNodes << " nodes" << endl;
+        level++;
+        total_time += milliseconds;
+
+        // cout << "numCurrentLevelNodes on CPU: " << *h_numCurrentLevelNodes << endl;
+        // cout << "Level " << level << " on CPU: ";
         // for (int i = 0; i < *h_numCurrentLevelNodes; i++){
         //     cout << h_currentLevelNodes[i] << " ";
         // }
         // cout << endl;
-        float milliseconds = 0;
-        err = cudaEventElapsedTime(&milliseconds, start, stop); cuda_err_check(err, __FILE__, __LINE__);
-        cout << "Time taken for kernel execution: " << milliseconds << " ms " << "with " << numBlocks << " blocks and " << lws << " threads per block" << " at level " << level << " with " << *h_numCurrentLevelNodes << " nodes" << endl;
-        level++;
-        total_time += milliseconds;
     }
 
     cout << "Total time taken for kernel execution: " << total_time << " ms" << endl;
 
     err = cudaFree(numNextLevelNodes); cuda_err_check(err, __FILE__, __LINE__);
     err = cudaFree(d_nextLevelNodes); cuda_err_check(err, __FILE__, __LINE__);
-    err = cudaFree(something_changed); cuda_err_check(err, __FILE__, __LINE__);
 
     err = cudaFreeHost(h_currentLevelNodes); cuda_err_check(err, __FILE__, __LINE__);
 }

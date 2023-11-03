@@ -7,7 +7,7 @@ BINDIR = bin
 CXX := nvcc
 CUFLAGS := -gencode arch=compute_75,code=sm_75 -gencode arch=compute_86,code=sm_86 -gencode arch=compute_86,code=compute_86
 
-CXXFLAGS= -I$(IDIR) -std=c++20 -g -G $(CUFLAGS) $(CV_FLAGS) -O3
+CXXFLAGS= -I$(IDIR) -std=c++17 -g -G $(CUFLAGS) $(CV_FLAGS) -O3
 LDFLAGS = $(GMP) $(CV_LIBS)
 
 ODIR=obj

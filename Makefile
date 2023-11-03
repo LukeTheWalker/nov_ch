@@ -29,7 +29,7 @@ UNAME_S := $(shell uname -s)
 
 file_name = $(notdir $(input_file))
 
-$(TARGET): $(OBJ) | $(BINDIR)
+$(TARGET): $(OBJ) | $(BINDIR) $(SDIR) $(IDIR)
 	$(CXX) -o $@ $^ $(LDFLAGS)
 
 all: $(TARGET) run
@@ -40,13 +40,15 @@ run: $(TARGET)
 $(ODIR)/%.o: $(SDIR)/%.cpp $(DEPS) | $(ODIR)
 	$(CXX) -c -o $@ $< $(CXXFLAGS)
 
-$(ODIR)/%.o: $(SDIR)/%.cu $(DEPS)  | $(ODIR) $(SDIR) $(IDIR)
+$(ODIR)/%.o: $(SDIR)/%.cu $(DEPS)  | $(ODIR)
 	$(CXX) -c -o $@ $< $(CXXFLAGS)
 
-.PHONY: clean run
+.PHONY: clean run init
 
 clean:
 	rm -f $(ODIR)/*.o $(TARGET)
+
+init: | $(BINDIR) $(SDIR) $(IDIR) $(ODIR)
 
 $(ODIR):
 	mkdir -p $(ODIR)

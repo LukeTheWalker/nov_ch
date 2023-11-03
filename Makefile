@@ -40,7 +40,7 @@ run: $(TARGET)
 $(ODIR)/%.o: $(SDIR)/%.cpp $(DEPS) | $(ODIR)
 	$(CXX) -c -o $@ $< $(CXXFLAGS)
 
-$(ODIR)/%.o: $(SDIR)/%.cu $(DEPS)  | $(ODIR)
+$(ODIR)/%.o: $(SDIR)/%.cu $(DEPS)  | $(ODIR) $(SDIR) $(IDIR)
 	$(CXX) -c -o $@ $< $(CXXFLAGS)
 
 .PHONY: clean run
@@ -53,3 +53,9 @@ $(ODIR):
 
 $(BINDIR): 
 	mkdir -p $(BINDIR)
+
+$(SDIR):
+	mkdir -p $(SDIR)
+
+$(IDIR):
+	mkdir -p $(IDIR)

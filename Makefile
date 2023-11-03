@@ -29,7 +29,7 @@ UNAME_S := $(shell uname -s)
 
 file_name = $(notdir $(input_file))
 
-$(TARGET): $(OBJ) | $(BINDIR) $(SDIR) $(IDIR)
+$(TARGET): $(SDIR) $(IDIR) $(OBJ) | $(BINDIR)
 	$(CXX) -o $@ $^ $(LDFLAGS)
 
 all: $(TARGET) run

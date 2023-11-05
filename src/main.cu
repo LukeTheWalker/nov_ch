@@ -156,15 +156,21 @@ int main (int argc, char ** argv){
         err = cudaMalloc((void**)&d_nodePtrs, (numNodes+1) * sizeof(int*)); cuda_err_check(err, __FILE__, __LINE__);
         err = cudaMalloc((void**)&d_nodeNeighbors, numEdges * 2 * sizeof(int)); cuda_err_check(err, __FILE__, __LINE__);
      
+        int * h_nodePtrs = (int*)malloc((numNodes+1) * sizeof(int));
+        int * h_nodeNeighbors = (int*)malloc(numEdges * 2 * sizeof(int));
+
         int ptr = 0;
         for (int i = 0; i < numNodes; i++){
-            err = cudaMemcpy(&d_nodePtrs[i], &ptr, sizeof(int), cudaMemcpyHostToDevice); cuda_err_check(err, __FILE__, __LINE__);
+            h_nodePtrs[i] = ptr;
             for (int j = 0; j < g[i].size(); j++){
-                err = cudaMemcpy(&d_nodeNeighbors[ptr], &g[i][j], sizeof(int), cudaMemcpyHostToDevice); cuda_err_check(err, __FILE__, __LINE__);
+                h_nodeNeighbors[ptr] = g[i][j];
                 ptr++;
             }
         }
-        err = cudaMemcpy(&d_nodePtrs[numNodes], &ptr, sizeof(int), cudaMemcpyHostToDevice); cuda_err_check(err, __FILE__, __LINE__);
+        h_nodePtrs[numNodes] = ptr;
+
+        err = cudaMemcpy(d_nodePtrs, h_nodePtrs, (numNodes+1) * sizeof(int), cudaMemcpyHostToDevice); cuda_err_check(err, __FILE__, __LINE__);
+        err = cudaMemcpy(d_nodeNeighbors, h_nodeNeighbors, numEdges * 2 * sizeof(int), cudaMemcpyHostToDevice); cuda_err_check(err, __FILE__, __LINE__);err = cudaMemcpy(&d_nodePtrs[numNodes], &ptr, sizeof(int), cudaMemcpyHostToDevice); cuda_err_check(err, __FILE__, __LINE__);
     }
 
     int *d_currLevelNodes;

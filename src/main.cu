@@ -5,9 +5,9 @@
 #include <fstream>
 #include <algorithm>
 
-#define LOCAL_QUEUE_SIZE 51
-#define PERSONAL_QUEUE_SIZE 128
-#define LWS 64
+#define LOCAL_QUEUE_SIZE 128
+#define PERSONAL_QUEUE_SIZE 64
+#define LWS 512
 
 using namespace std;
 using Graph = vector<vector<int> >;
@@ -52,22 +52,19 @@ __global__ void kernel (
         int end = d_nodePtrs[node + 1];
         for (int i = start; i < end; i++){
             int neighbor = d_nodeNeighbors[i];
-            if (d_nodeVisited[neighbor] == 0){
-                if (d_nodeVisited[neighbor] == 0 && (atomicCAS(&d_nodeVisited[neighbor], 0, 1)) == 0){
-                    int index = -1;
-                    if (personal_queue_size < PERSONAL_QUEUE_SIZE){
-                        index = personal_queue_size++;
-                        personal_queue[index] = neighbor;
-                    }
-                    else if (*local_queue_size < LOCAL_QUEUE_SIZE){
-                        if ((index = atomicAdd_block(local_queue_size, 1)) < LOCAL_QUEUE_SIZE){
-                            local_queue[index] = neighbor;
-                        }
-                    }
-                    if (index != -1) continue;
-                    index = atomicAdd(numNextLevelNodes, 1);
-                    d_nextLevelNodes[index] = neighbor;
+            if (d_nodeVisited[neighbor] == 0 && (atomicCAS(&d_nodeVisited[neighbor], 0, 1)) == 0){
+                int index = -1;
+                if (personal_queue_size < PERSONAL_QUEUE_SIZE){
+                    personal_queue[personal_queue_size++] = neighbor;
+                    continue;
                 }
+                if (*local_queue_size < LOCAL_QUEUE_SIZE){
+                    if ((index = atomicAdd_block(local_queue_size, 1)) < LOCAL_QUEUE_SIZE){
+                        local_queue[index] = neighbor;
+                        continue;
+                    }
+                }
+                d_nextLevelNodes[atomicAdd(numNextLevelNodes, 1)] = neighbor;
             }
         }
     }
@@ -171,11 +168,10 @@ void kernel_launch (
         err = cudaMemset(numNextLevelNodes, 0, sizeof(int)); cuda_err_check(err, __FILE__, __LINE__);
         err = cudaMemset(d_nextLevelNodes, 0, nquarts_nodes * sizeof(int4)); cuda_err_check(err, __FILE__, __LINE__);
 
-        err = cudaEventRecord(start); cuda_err_check(err, __FILE__, __LINE__);
 
         // cout << "Launching kernel with " << numBlocks << " blocks and " << lws << " threads per block" << endl;
+        err = cudaEventRecord(start); cuda_err_check(err, __FILE__, __LINE__);
         kernel<<<numBlocks, lws, sizeof(int)*(LOCAL_QUEUE_SIZE+1)>>>(numNodes, d_nodePtrs, d_nodeNeighbors, d_currLevelNodes, d_nodeVisited, *h_numCurrentLevelNodes, d_nextLevelNodes, numNextLevelNodes);
-
         err = cudaEventRecord(stop); cuda_err_check(err, __FILE__, __LINE__);
         err = cudaEventSynchronize(stop); cuda_err_check(err, __FILE__, __LINE__);
 

@@ -34,7 +34,7 @@ $(TARGET): $(OBJ) | $(BINDIR)
 
 all: init $(TARGET) run
 
-run: $(TARGET)
+run: init $(TARGET)
 	time ./$(TARGET) $(input_file) 
 
 $(ODIR)/%.o: $(SDIR)/%.cpp $(DEPS) | $(ODIR)

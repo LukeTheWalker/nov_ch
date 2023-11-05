@@ -32,9 +32,7 @@ file_name = $(notdir $(input_file))
 $(TARGET): $(OBJ) | $(BINDIR)
 	$(CXX) -o $@ $^ $(LDFLAGS)
 
-$(OBJ): | $(ODIR) $(SDIR) $(IDIR)
-
-all: $(TARGET) run
+all: init $(TARGET) run
 
 run: $(TARGET)
 	time ./$(TARGET) $(input_file) 

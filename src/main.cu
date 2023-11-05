@@ -168,7 +168,6 @@ void kernel_launch (
         err = cudaMemset(numNextLevelNodes, 0, sizeof(int)); cuda_err_check(err, __FILE__, __LINE__);
         err = cudaMemset(d_nextLevelNodes, 0, nquarts_nodes * sizeof(int4)); cuda_err_check(err, __FILE__, __LINE__);
 
-
         // cout << "Launching kernel with " << numBlocks << " blocks and " << lws << " threads per block" << endl;
         err = cudaEventRecord(start); cuda_err_check(err, __FILE__, __LINE__);
         kernel<<<numBlocks, lws, sizeof(int)*(LOCAL_QUEUE_SIZE+1)>>>(numNodes, d_nodePtrs, d_nodeNeighbors, d_currLevelNodes, d_nodeVisited, *h_numCurrentLevelNodes, d_nextLevelNodes, numNextLevelNodes);
@@ -256,6 +255,9 @@ int main (int argc, char ** argv){
 
         err = cudaMemcpy(d_nodePtrs, h_nodePtrs, (numNodes+1) * sizeof(int), cudaMemcpyHostToDevice); cuda_err_check(err, __FILE__, __LINE__);
         err = cudaMemcpy(d_nodeNeighbors, h_nodeNeighbors, numEdges * 2 * sizeof(int), cudaMemcpyHostToDevice); cuda_err_check(err, __FILE__, __LINE__);
+
+        free(h_nodePtrs);
+        free(h_nodeNeighbors);
     }
 
     int *d_currLevelNodes;

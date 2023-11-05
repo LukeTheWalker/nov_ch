@@ -5,7 +5,7 @@
 #include <fstream>
 #include <algorithm>
 
-#define LOCAL_QUEUE_SIZE 512
+#define LOCAL_QUEUE_SIZE 51
 #define PERSONAL_QUEUE_SIZE 128
 #define LWS 64
 
@@ -153,6 +153,15 @@ void kernel_launch (
     err = cudaEventCreate(&start); cuda_err_check(err, __FILE__, __LINE__);
     err = cudaEventCreate(&stop); cuda_err_check(err, __FILE__, __LINE__);
 
+    err = cudaEventRecord(start); cuda_err_check(err, __FILE__, __LINE__);
+    err = cudaEventRecord(stop); cuda_err_check(err, __FILE__, __LINE__);
+    err = cudaEventSynchronize(stop); cuda_err_check(err, __FILE__, __LINE__);
+
+    float milliseconds = 0;
+    err = cudaEventElapsedTime(&milliseconds, start, stop); cuda_err_check(err, __FILE__, __LINE__);
+
+    cout << "Time used before kernel launch: " << milliseconds << " ms" << endl;
+
     float total_time = 0;
 
     while (*h_numCurrentLevelNodes > 0){
@@ -202,6 +211,9 @@ void kernel_launch (
     err = cudaFree(d_nextLevelNodes); cuda_err_check(err, __FILE__, __LINE__);
 
     err = cudaFreeHost(h_currentLevelNodes); cuda_err_check(err, __FILE__, __LINE__);
+
+    err = cudaEventDestroy(start); cuda_err_check(err, __FILE__, __LINE__);
+    err = cudaEventDestroy(stop); cuda_err_check(err, __FILE__, __LINE__);
 }
 
 int main (int argc, char ** argv){

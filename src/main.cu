@@ -5,7 +5,9 @@
 #include <fstream>
 #include <algorithm>
 
-#define LOCAL_QUEUE_SIZE 1024
+#define LOCAL_QUEUE_SIZE 512
+#define PERSONAL_QUEUE_SIZE 128
+#define LWS 64
 
 using namespace std;
 using Graph = vector<vector<int> >;
@@ -26,7 +28,7 @@ void cuda_err_check (cudaError_t err, const char *file, int line)
 __global__ void kernel (
     int numNodes, 
     int *d_nodePtrs, int *d_nodeNeighbors, 
-    int *d_currLevelNodes, int *d_nodeVisited, int * numCurrLevelNodes,
+    int *d_currLevelNodes, int *d_nodeVisited, const int numCurrLevelNodes,
     int *d_nextLevelNodes, int *numNextLevelNodes
     ){
     extern __shared__ int lmem[];
@@ -35,8 +37,12 @@ __global__ void kernel (
     if (threadIdx.x == 0) *local_queue_size = 0;
     
     __syncthreads();
+
+    int personal_queue_size = 0;
+    int personal_queue[PERSONAL_QUEUE_SIZE];
+
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid < *numCurrLevelNodes){
+    if (tid < numCurrLevelNodes){
         int node = d_currLevelNodes[tid];
         int start = d_nodePtrs[node];
         int end = d_nodePtrs[node + 1];
@@ -45,7 +51,11 @@ __global__ void kernel (
             if (d_nodeVisited[neighbor] == 0){
                 if (d_nodeVisited[neighbor] == 0 && (atomicCAS(&d_nodeVisited[neighbor], 0, 1)) == 0){
                     int index = -1;
-                    if (*local_queue_size < LOCAL_QUEUE_SIZE){
+                    if (personal_queue_size < PERSONAL_QUEUE_SIZE){
+                        index = personal_queue_size++;
+                        personal_queue[index] = neighbor;
+                    }
+                    else if (*local_queue_size < LOCAL_QUEUE_SIZE){
                         if ((index = atomicAdd_block(local_queue_size, 1)) < LOCAL_QUEUE_SIZE){
                             local_queue[index] = neighbor;
                         }
@@ -58,6 +68,16 @@ __global__ void kernel (
         }
     }
     
+    // merge personal queue with local queue
+    // int local_index = atomicAdd(local_queue_size, personal_queue_size);
+    // for (int i = 0; i < personal_queue_size; i++)
+    //     local_queue[local_index + i] = personal_queue[i];
+
+
+    // merge personal queue with global queue
+    int local_index = atomicAdd(numNextLevelNodes, personal_queue_size);
+    for (int i = 0; i < personal_queue_size; i++)
+        d_nextLevelNodes[local_index + i] = personal_queue[i];
 
     __syncthreads();
     // merge local queue with global queue
@@ -65,7 +85,7 @@ __global__ void kernel (
     int start_index = threadIdx.x * number_of_nodes_to_merge_per_thread;
     int end_index = start_index + number_of_nodes_to_merge_per_thread;
     if (threadIdx.x == blockDim.x - 1) end_index = *local_queue_size;
-    int local_index = atomicAdd(numNextLevelNodes, end_index - start_index);
+    local_index = atomicAdd(numNextLevelNodes, end_index - start_index);
     for (int i = 0; i < end_index - start_index; i++)
         d_nextLevelNodes[local_index + i] = local_queue[start_index + i];
     
@@ -75,7 +95,7 @@ void kernel_launch (
     int numNodes, 
     int *d_nodePtrs, int *d_nodeNeighbors, 
     int *d_currLevelNodes, int * numCurrentLevelNodes, 
-    int *d_nodeVisited, int lws = 64
+    int *d_nodeVisited, int lws = LWS
     ){
 
     int numBlocks;
@@ -114,7 +134,7 @@ void kernel_launch (
         err = cudaEventRecord(start); cuda_err_check(err, __FILE__, __LINE__);
 
         // cout << "Launching kernel with " << numBlocks << " blocks and " << lws << " threads per block" << endl;
-        kernel<<<numBlocks, lws, sizeof(int)*(LOCAL_QUEUE_SIZE+1)>>>(numNodes, d_nodePtrs, d_nodeNeighbors, d_currLevelNodes, d_nodeVisited, numCurrentLevelNodes, d_nextLevelNodes, numNextLevelNodes);
+        kernel<<<numBlocks, lws, sizeof(int)*(LOCAL_QUEUE_SIZE+1)>>>(numNodes, d_nodePtrs, d_nodeNeighbors, d_currLevelNodes, d_nodeVisited, *h_numCurrentLevelNodes, d_nextLevelNodes, numNextLevelNodes);
 
         err = cudaEventRecord(stop); cuda_err_check(err, __FILE__, __LINE__);
         err = cudaEventSynchronize(stop); cuda_err_check(err, __FILE__, __LINE__);

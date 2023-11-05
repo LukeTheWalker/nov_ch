@@ -29,17 +29,21 @@ __global__ void kernel (
     int numNodes, 
     int *d_nodePtrs, int *d_nodeNeighbors, 
     int *d_currLevelNodes, int *d_nodeVisited, const int numCurrLevelNodes,
-    int *d_nextLevelNodes, int *numNextLevelNodes
+    int4 *d_nextLevelNodes4, int *numNextLevelNodes
     ){
-    extern __shared__ int lmem[];
-    int * local_queue = lmem + 1;
-    int * local_queue_size = lmem;
+    extern __shared__ int4 lmem[];
+    int * local_queue = ((int*)lmem) + 1;
+    int * local_queue_size = ((int*)lmem);
     if (threadIdx.x == 0) *local_queue_size = 0;
     
     __syncthreads();
 
     int personal_queue_size = 0;
-    int personal_queue[PERSONAL_QUEUE_SIZE];
+    int4 personal_queue4[PERSONAL_QUEUE_SIZE/4];
+
+    int *personal_queue = (int*)personal_queue4;
+    int *d_nextLevelNodes = (int*)d_nextLevelNodes4;
+
 
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid < numCurrLevelNodes){
@@ -75,9 +79,35 @@ __global__ void kernel (
 
 
     // merge personal queue with global queue
+    // int local_index = atomicAdd(numNextLevelNodes, personal_queue_size);
+    // for (int i = 0; i < personal_queue_size; i++)
+    //     d_nextLevelNodes[local_index + i] = personal_queue[i];
+
+    //merge personal queue with global queue vectorized
     int local_index = atomicAdd(numNextLevelNodes, personal_queue_size);
-    for (int i = 0; i < personal_queue_size; i++)
-        d_nextLevelNodes[local_index + i] = personal_queue[i];
+    if (personal_queue_size > 0){
+        int new_personal_queue_size = personal_queue_size;
+        int local_offset = local_index%4 == 0 ? 0 : 4-local_index%4;
+        if (local_offset > personal_queue_size){
+            for (int i = 0; i < personal_queue_size; i++)
+                d_nextLevelNodes[local_index + i] = personal_queue[i];
+        }
+        else{
+                // printf("Misaligned local_index: %d\n", local_index);
+            for (int i = 0; i < local_offset; i++)
+                d_nextLevelNodes[local_index + i] = personal_queue[personal_queue_size-1-i];
+            local_index = local_index + local_offset;
+            new_personal_queue_size = personal_queue_size - local_offset;
+        
+            int nquart_personal_queue_size = (new_personal_queue_size - new_personal_queue_size%4)/4;
+
+            for (int i = 0; i < nquart_personal_queue_size; i++)
+                d_nextLevelNodes4[local_index/4 + i] = personal_queue4[i];
+
+            for (int i = nquart_personal_queue_size * 4; i < new_personal_queue_size; i++)
+                d_nextLevelNodes[local_index + i] = personal_queue[i];
+            }
+        }
 
     __syncthreads();
     // merge local queue with global queue
@@ -101,7 +131,7 @@ void kernel_launch (
     int numBlocks;
     cudaError_t err;
 
-    int *d_nextLevelNodes;
+    int4 *d_nextLevelNodes;
     int *numNextLevelNodes;
     
     int * h_currentLevelNodes;
@@ -110,8 +140,9 @@ void kernel_launch (
     int * h_numCurrentLevelNodes = (int*)malloc(sizeof(int));
     err = cudaMemcpy(h_numCurrentLevelNodes, numCurrentLevelNodes, sizeof(int), cudaMemcpyDeviceToHost); cuda_err_check(err, __FILE__, __LINE__);
 
+    int nquarts_nodes = round_div_up(numNodes, 4);
     err = cudaMalloc((void**)&numNextLevelNodes, sizeof(int)); cuda_err_check(err, __FILE__, __LINE__);
-    err = cudaMalloc((void**)&d_nextLevelNodes, numNodes * sizeof(int)); cuda_err_check(err, __FILE__, __LINE__);
+    err = cudaMalloc((void**)&d_nextLevelNodes, nquarts_nodes * sizeof(int4)); cuda_err_check(err, __FILE__, __LINE__);
     
     err = cudaMemset(numNextLevelNodes, 0, sizeof(int)); cuda_err_check(err, __FILE__, __LINE__);
 
@@ -129,7 +160,7 @@ void kernel_launch (
         numBlocks = round_div_up(*h_numCurrentLevelNodes, lws);
 
         err = cudaMemset(numNextLevelNodes, 0, sizeof(int)); cuda_err_check(err, __FILE__, __LINE__);
-        err = cudaMemset(d_nextLevelNodes, 0, numNodes * sizeof(int)); cuda_err_check(err, __FILE__, __LINE__);
+        err = cudaMemset(d_nextLevelNodes, 0, nquarts_nodes * sizeof(int4)); cuda_err_check(err, __FILE__, __LINE__);
 
         err = cudaEventRecord(start); cuda_err_check(err, __FILE__, __LINE__);
 

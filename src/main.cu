@@ -24,11 +24,11 @@ void cuda_err_check (cudaError_t err, const char *file, int line)
 __global__ void kernel (
     int numNodes, 
     int *d_nodePtrs, int *d_nodeNeighbors, 
-    int *d_currLevelNodes, int *d_nodeVisited, int * numCurrLevelNodes,
+    int *d_currLevelNodes, int *d_nodeVisited, const int numCurrLevelNodes,
     int *d_nextLevelNodes, int *numNextLevelNodes
     ){
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid < *numCurrLevelNodes){
+    if (tid < numCurrLevelNodes){
         int node = d_currLevelNodes[tid];
         int start = d_nodePtrs[node];
         int end = d_nodePtrs[node + 1];
@@ -90,7 +90,7 @@ void kernel_launch (
         err = cudaEventRecord(start); cuda_err_check(err, __FILE__, __LINE__);
 
         // cout << "Launching kernel with " << numBlocks << " blocks and " << lws << " threads per block" << endl;
-        kernel<<<numBlocks, lws>>>(numNodes, d_nodePtrs, d_nodeNeighbors, d_currLevelNodes, d_nodeVisited, numCurrentLevelNodes, d_nextLevelNodes, numNextLevelNodes);
+        kernel<<<numBlocks, lws>>>(numNodes, d_nodePtrs, d_nodeNeighbors, d_currLevelNodes, d_nodeVisited, *h_numCurrentLevelNodes, d_nextLevelNodes, numNextLevelNodes);
 
         err = cudaEventRecord(stop); cuda_err_check(err, __FILE__, __LINE__);
         err = cudaEventSynchronize(stop); cuda_err_check(err, __FILE__, __LINE__);

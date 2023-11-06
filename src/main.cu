@@ -46,7 +46,7 @@ void kernel_launch (
     int numNodes, 
     int *d_nodePtrs, int *d_nodeNeighbors, 
     int *d_currLevelNodes, int * numCurrentLevelNodes, 
-    int *d_nodeVisited, int lws = 256
+    int *d_nodeVisited, int lws = 32
     ){
 
     int numBlocks;

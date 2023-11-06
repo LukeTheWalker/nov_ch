@@ -25,11 +25,32 @@ void cuda_err_check (cudaError_t err, const char *file, int line)
     }
 }
 
-__global__ void kernel (
+__global__ void global_queue (
     int numNodes, 
     int *d_nodePtrs, int *d_nodeNeighbors, 
     int *d_currLevelNodes, int *d_nodeVisited, const int numCurrLevelNodes,
-    int4 *d_nextLevelNodes4, int *numNextLevelNodes
+    int *d_nextLevelNodes, int *numNextLevelNodes
+    ){
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid < numCurrLevelNodes){
+        int node = d_currLevelNodes[tid];
+        int start = d_nodePtrs[node];
+        int end = d_nodePtrs[node + 1];
+        for (int i = start; i < end; i++){
+            int neighbor = d_nodeNeighbors[i];
+            if (d_nodeVisited[neighbor] == 0 && (atomicCAS(&d_nodeVisited[neighbor], 0, 1)) == 0){
+                int index = atomicAdd(numNextLevelNodes, 1);
+                d_nextLevelNodes[index] = neighbor;
+            }
+        }
+    }
+}
+
+__global__ void block_queue (
+    int numNodes, 
+    int *d_nodePtrs, int *d_nodeNeighbors, 
+    int *d_currLevelNodes, int *d_nodeVisited, const int numCurrLevelNodes,
+    int *d_nextLevelNodes, int *numNextLevelNodes
     ){
     extern __shared__ int4 lmem[];
     int * local_queue = ((int*)lmem) + 1;
@@ -42,7 +63,7 @@ __global__ void kernel (
     int4 personal_queue4[PERSONAL_QUEUE_SIZE/4];
 
     int *personal_queue = (int*)personal_queue4;
-    int *d_nextLevelNodes = (int*)d_nextLevelNodes4;
+    int4 *d_nextLevelNodes4 = (int4*)d_nextLevelNodes;
 
 
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -116,17 +137,18 @@ __global__ void kernel (
     
 }
 
-void kernel_launch (
+float kernel_launch (
     int numNodes, 
     int *d_nodePtrs, int *d_nodeNeighbors, 
     int *d_currLevelNodes, int * numCurrentLevelNodes, 
-    int *d_nodeVisited, int lws = LWS
+    int *d_nodeVisited, int lws = LWS,
+    bool use_global_queue = false
     ){
 
     int numBlocks;
     cudaError_t err;
 
-    int4 *d_nextLevelNodes;
+    int4 *d_nextLevelNodes4;
     int *numNextLevelNodes;
     
     int * h_currentLevelNodes;
@@ -137,7 +159,7 @@ void kernel_launch (
 
     int nquarts_nodes = round_div_up(numNodes, 4);
     err = cudaMalloc((void**)&numNextLevelNodes, sizeof(int)); cuda_err_check(err, __FILE__, __LINE__);
-    err = cudaMalloc((void**)&d_nextLevelNodes, nquarts_nodes * sizeof(int4)); cuda_err_check(err, __FILE__, __LINE__);
+    err = cudaMalloc((void**)&d_nextLevelNodes4, nquarts_nodes * sizeof(int4)); cuda_err_check(err, __FILE__, __LINE__);
     
     err = cudaMemset(numNextLevelNodes, 0, sizeof(int)); cuda_err_check(err, __FILE__, __LINE__);
 
@@ -159,16 +181,21 @@ void kernel_launch (
 
     float total_time = 0;
 
+    int * d_nextLevelNodes = (int*)d_nextLevelNodes4;
+
     while (*h_numCurrentLevelNodes > 0){
 
         numBlocks = round_div_up(*h_numCurrentLevelNodes, lws);
 
         err = cudaMemset(numNextLevelNodes, 0, sizeof(int)); cuda_err_check(err, __FILE__, __LINE__);
-        err = cudaMemset(d_nextLevelNodes, 0, nquarts_nodes * sizeof(int4)); cuda_err_check(err, __FILE__, __LINE__);
+        err = cudaMemset(d_nextLevelNodes4, 0, nquarts_nodes * sizeof(int4)); cuda_err_check(err, __FILE__, __LINE__);
 
         // cout << "Launching kernel with " << numBlocks << " blocks and " << lws << " threads per block" << endl;
         err = cudaEventRecord(start); cuda_err_check(err, __FILE__, __LINE__);
-        kernel<<<numBlocks, lws, sizeof(int)*(LOCAL_QUEUE_SIZE+1)>>>(numNodes, d_nodePtrs, d_nodeNeighbors, d_currLevelNodes, d_nodeVisited, *h_numCurrentLevelNodes, d_nextLevelNodes, numNextLevelNodes);
+        if (use_global_queue)
+            global_queue<<<numBlocks, lws>>>(numNodes, d_nodePtrs, d_nodeNeighbors, d_currLevelNodes, d_nodeVisited, *h_numCurrentLevelNodes, d_nextLevelNodes, numNextLevelNodes);
+        else
+            block_queue<<<numBlocks, lws, sizeof(int)*(LOCAL_QUEUE_SIZE+1)>>>(numNodes, d_nodePtrs, d_nodeNeighbors, d_currLevelNodes, d_nodeVisited, *h_numCurrentLevelNodes, d_nextLevelNodes, numNextLevelNodes);
         err = cudaEventRecord(stop); cuda_err_check(err, __FILE__, __LINE__);
         err = cudaEventSynchronize(stop); cuda_err_check(err, __FILE__, __LINE__);
 
@@ -186,7 +213,7 @@ void kernel_launch (
 
         float milliseconds = 0;
         err = cudaEventElapsedTime(&milliseconds, start, stop); cuda_err_check(err, __FILE__, __LINE__);
-        cout << "Time taken for kernel execution: " << milliseconds << " ms " << "with " << numBlocks << " blocks and " << lws << " threads per block" << " at level " << level << " with " << old_numCurrentLevelNodes << " nodes" << " generated " << *h_numCurrentLevelNodes << " nodes" << endl;
+        // cout << "Time taken for kernel execution: " << milliseconds << " ms " << "with " << numBlocks << " blocks and " << lws << " threads per block" << " at level " << level << " with " << old_numCurrentLevelNodes << " nodes" << " generated " << *h_numCurrentLevelNodes << " nodes" << endl;
         level++;
         total_time += milliseconds;
 
@@ -201,12 +228,27 @@ void kernel_launch (
     cout << "Total time taken for kernel execution: " << total_time << " ms" << endl;
 
     err = cudaFree(numNextLevelNodes); cuda_err_check(err, __FILE__, __LINE__);
-    err = cudaFree(d_nextLevelNodes); cuda_err_check(err, __FILE__, __LINE__);
+    err = cudaFree(d_nextLevelNodes4); cuda_err_check(err, __FILE__, __LINE__);
 
     err = cudaFreeHost(h_currentLevelNodes); cuda_err_check(err, __FILE__, __LINE__);
 
     err = cudaEventDestroy(start); cuda_err_check(err, __FILE__, __LINE__);
     err = cudaEventDestroy(stop); cuda_err_check(err, __FILE__, __LINE__);
+
+    return total_time;
+}
+
+void init_structures (int numNodes, int *d_currLevelNodes, int *numCurrLevelNodes, int *d_nodeVisited){
+    cudaError_t err = cudaMemset(d_currLevelNodes, 0, numNodes * sizeof(int)); cuda_err_check(err, __FILE__, __LINE__);
+    err = cudaMemset(d_nodeVisited, 0, numNodes * sizeof(int)); cuda_err_check(err, __FILE__, __LINE__);
+
+    int number_of_current_level_nodes = 1;
+    int startNode = 0;
+    char visited = 1;
+
+    err = cudaMemcpy(numCurrLevelNodes, &number_of_current_level_nodes, sizeof(int), cudaMemcpyHostToDevice); cuda_err_check(err, __FILE__, __LINE__);
+    err = cudaMemcpy(d_currLevelNodes, &startNode, sizeof(int), cudaMemcpyHostToDevice); cuda_err_check(err, __FILE__, __LINE__);
+    err = cudaMemcpy(&d_nodeVisited[startNode], &visited, sizeof(char), cudaMemcpyHostToDevice); cuda_err_check(err, __FILE__, __LINE__);
 }
 
 int main (int argc, char ** argv){
@@ -266,18 +308,14 @@ int main (int argc, char ** argv){
     err = cudaMalloc((void**)&d_nodeVisited, numNodes * sizeof(int)); cuda_err_check(err, __FILE__, __LINE__);
     err = cudaMalloc((void**)&numCurrLevelNodes, sizeof(int)); cuda_err_check(err, __FILE__, __LINE__);
     
-    err = cudaMemset(d_currLevelNodes, 0, numNodes * sizeof(int)); cuda_err_check(err, __FILE__, __LINE__);
-    err = cudaMemset(d_nodeVisited, 0, numNodes * sizeof(int)); cuda_err_check(err, __FILE__, __LINE__);
+    init_structures(numNodes, d_currLevelNodes, numCurrLevelNodes, d_nodeVisited);
+    float global_time = kernel_launch(numNodes, d_nodePtrs, d_nodeNeighbors, d_currLevelNodes, numCurrLevelNodes, d_nodeVisited, true);
+    init_structures(numNodes, d_currLevelNodes, numCurrLevelNodes, d_nodeVisited);
+    float local_time = kernel_launch(numNodes, d_nodePtrs, d_nodeNeighbors, d_currLevelNodes, numCurrLevelNodes, d_nodeVisited, LWS, false);
 
-    int number_of_current_level_nodes = 1;
-    int startNode = 0;
-    char visited = 1;
-
-    err = cudaMemcpy(numCurrLevelNodes, &number_of_current_level_nodes, sizeof(int), cudaMemcpyHostToDevice); cuda_err_check(err, __FILE__, __LINE__);
-    err = cudaMemcpy(d_currLevelNodes, &startNode, sizeof(int), cudaMemcpyHostToDevice); cuda_err_check(err, __FILE__, __LINE__);
-    err = cudaMemcpy(&d_nodeVisited[startNode], &visited, sizeof(char), cudaMemcpyHostToDevice); cuda_err_check(err, __FILE__, __LINE__);
-
-    kernel_launch(numNodes, d_nodePtrs, d_nodeNeighbors, d_currLevelNodes, numCurrLevelNodes, d_nodeVisited);
+    cout << "Global queue time: " << global_time << " ms" << endl;
+    cout << "Local queue time: " << local_time << " ms" << endl;
+    cout << "Speedup of local queue over global queue: " << global_time/local_time << endl;
 
     err = cudaFree(d_nodePtrs); cuda_err_check(err, __FILE__, __LINE__);
     err = cudaFree(d_nodeNeighbors); cuda_err_check(err, __FILE__, __LINE__);

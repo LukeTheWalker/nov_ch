@@ -1,9 +1,9 @@
-#include <cuda_runtime_api.h>
 #include <iostream>
 #include <vector>
 #include <utility>
 #include <fstream>
 #include <algorithm>
+#include <chrono>
 
 #define LOCAL_QUEUE_SIZE 256
 #define PERSONAL_QUEUE_SIZE 128
@@ -23,6 +23,49 @@ void cuda_err_check (cudaError_t err, const char *file, int line)
         fprintf (stderr, "CUDA error: %s (%s:%d)\n", cudaGetErrorString (err), file, line);
         exit (EXIT_FAILURE);
     }
+}
+
+void single_step (int numNodes, int * nodePtrs, int * nodeNeighbors, int * currLevelNodes, int * nextLevelNodes, bool * visitedNodes, int & numCurrLevelNodes, int & numNextLevelNodes){
+    for (int i = 0; i < numCurrLevelNodes; i++){
+        int currNode = currLevelNodes[i];
+        int start = nodePtrs[currNode];
+        int end = nodePtrs[currNode+1];
+        for (int j = start; j < end; j++){
+            int neighbor = nodeNeighbors[j];
+            if (!visitedNodes[neighbor]){
+                visitedNodes[neighbor] = true;
+                nextLevelNodes[numNextLevelNodes] = neighbor;
+                numNextLevelNodes++;
+            }
+        }
+    }
+    numCurrLevelNodes = numNextLevelNodes;
+    numNextLevelNodes = 0;
+}
+
+double sequential_bfs (int numNodes, int * nodePtrs, int * nodeNeighbors){
+    double time_spent = 0;
+    int * currLevelNodes = (int*)malloc(numNodes * sizeof(int));
+    int * nextLevelNodes = (int*)malloc(numNodes * sizeof(int));
+    bool * visitedNodes = (bool*)malloc(numNodes * sizeof(bool));
+    int numCurrLevelNodes = 1;
+    int numNextLevelNodes = 0;
+    int startNode = 0;
+    currLevelNodes[0] = startNode;
+    visitedNodes[startNode] = true;
+     while (numCurrLevelNodes > 0){
+        numNextLevelNodes = 0;
+        auto start = chrono::high_resolution_clock::now();
+        single_step(numNodes, nodePtrs, nodeNeighbors, currLevelNodes, nextLevelNodes, visitedNodes, numCurrLevelNodes, numNextLevelNodes);
+        auto end = chrono::high_resolution_clock::now();
+        chrono::duration<float> duration = end - start;
+        time_spent += duration.count();
+        swap(currLevelNodes, nextLevelNodes);
+    }
+    free(currLevelNodes);
+    free(nextLevelNodes);
+    free(visitedNodes);
+    return time_spent * 1000;
 }
 
 __global__ void global_queue (
@@ -127,14 +170,15 @@ __global__ void block_queue (
 
     __syncthreads();
     // merge local queue with global queue
-    int number_of_nodes_to_merge_per_thread = *local_queue_size / blockDim.x;
-    int start_index = threadIdx.x * number_of_nodes_to_merge_per_thread;
-    int end_index = start_index + number_of_nodes_to_merge_per_thread;
-    if (threadIdx.x == blockDim.x - 1) end_index = *local_queue_size;
-    local_index = atomicAdd(numNextLevelNodes, end_index - start_index);
-    for (int i = 0; i < end_index - start_index; i++)
-        d_nextLevelNodes[local_index + i] = local_queue[start_index + i];
-    
+    if (*local_queue_size > 0){
+        int number_of_nodes_to_merge_per_thread = *local_queue_size / blockDim.x;
+        int start_index = threadIdx.x * number_of_nodes_to_merge_per_thread;
+        int end_index = start_index + number_of_nodes_to_merge_per_thread;
+        if (threadIdx.x == blockDim.x - 1) end_index = *local_queue_size;
+        local_index = atomicAdd(numNextLevelNodes, end_index - start_index);
+        for (int i = 0; i < end_index - start_index; i++)
+            d_nextLevelNodes[local_index + i] = local_queue[start_index + i];
+    }
 }
 
 float kernel_launch (
@@ -204,7 +248,7 @@ float kernel_launch (
         err = cudaMemcpy(numCurrentLevelNodes, numNextLevelNodes, sizeof(int), cudaMemcpyDeviceToDevice); cuda_err_check(err, __FILE__, __LINE__);
         err = cudaMemcpy(d_currLevelNodes, d_nextLevelNodes, numNodes * sizeof(int), cudaMemcpyDeviceToDevice); cuda_err_check(err, __FILE__, __LINE__);
 
-        int old_numCurrentLevelNodes = *h_numCurrentLevelNodes;
+        // int old_numCurrentLevelNodes = *h_numCurrentLevelNodes;
 
         err = cudaMemcpy(h_numCurrentLevelNodes, numCurrentLevelNodes, sizeof(int), cudaMemcpyDeviceToHost); cuda_err_check(err, __FILE__, __LINE__);
         err = cudaMemcpy(h_currentLevelNodes, d_currLevelNodes, *h_numCurrentLevelNodes * sizeof(int), cudaMemcpyDeviceToHost); cuda_err_check(err, __FILE__, __LINE__);
@@ -263,42 +307,40 @@ int main (int argc, char ** argv){
     int *d_nodePtrs;
     int *d_nodeNeighbors;
 
-    {
-        Graph g;
-        ifstream infile;
-        infile.open(argv[1]);
-        infile >> numNodes >> numEdges;
-        g.resize(numNodes);
-        for (int i = 0; i < numEdges; i++){
-            int src, dst;
-            infile >> src >> dst;
-            g[src].push_back(dst);
-            g[dst].push_back(src);
-        }
-        infile.close();
-
-        err = cudaMalloc((void**)&d_nodePtrs, (numNodes+1) * sizeof(int*)); cuda_err_check(err, __FILE__, __LINE__);
-        err = cudaMalloc((void**)&d_nodeNeighbors, numEdges * 2 * sizeof(int)); cuda_err_check(err, __FILE__, __LINE__);
-     
-        int * h_nodePtrs = (int*)malloc((numNodes+1) * sizeof(int));
-        int * h_nodeNeighbors = (int*)malloc(numEdges * 2 * sizeof(int));
-
-        int ptr = 0;
-        for (int i = 0; i < numNodes; i++){
-            h_nodePtrs[i] = ptr;
-            for (int j = 0; j < g[i].size(); j++){
-                h_nodeNeighbors[ptr] = g[i][j];
-                ptr++;
-            }
-        }
-        h_nodePtrs[numNodes] = ptr;
-
-        err = cudaMemcpy(d_nodePtrs, h_nodePtrs, (numNodes+1) * sizeof(int), cudaMemcpyHostToDevice); cuda_err_check(err, __FILE__, __LINE__);
-        err = cudaMemcpy(d_nodeNeighbors, h_nodeNeighbors, numEdges * 2 * sizeof(int), cudaMemcpyHostToDevice); cuda_err_check(err, __FILE__, __LINE__);
-
-        free(h_nodePtrs);
-        free(h_nodeNeighbors);
+    
+    Graph g;
+    ifstream infile;
+    infile.open(argv[1]);
+    infile >> numNodes >> numEdges;
+    g.resize(numNodes);
+    for (int i = 0; i < numEdges; i++){
+        int src, dst;
+        infile >> src >> dst;
+        g[src].push_back(dst);
+        g[dst].push_back(src);
     }
+    infile.close();
+
+    cout << "sizeof(int): " << sizeof(int) << " vs sizeof(int*) " << sizeof(int*) << endl;
+
+    err = cudaMalloc((void**)&d_nodePtrs, (numNodes+1) * sizeof(int)); cuda_err_check(err, __FILE__, __LINE__);
+    err = cudaMalloc((void**)&d_nodeNeighbors, numEdges * 2 * sizeof(int)); cuda_err_check(err, __FILE__, __LINE__);
+    
+    int * h_nodePtrs = (int*)malloc((numNodes+1) * sizeof(int));
+    int * h_nodeNeighbors = (int*)malloc(numEdges * 2 * sizeof(int));
+
+    int ptr = 0;
+    for (int i = 0; i < numNodes; i++){
+        h_nodePtrs[i] = ptr;
+        for (int j = 0; j < g[i].size(); j++){
+            h_nodeNeighbors[ptr] = g[i][j];
+            ptr++;
+        }
+    }
+    h_nodePtrs[numNodes] = ptr;
+
+    err = cudaMemcpy(d_nodePtrs, h_nodePtrs, (numNodes+1) * sizeof(int), cudaMemcpyHostToDevice); cuda_err_check(err, __FILE__, __LINE__);
+    err = cudaMemcpy(d_nodeNeighbors, h_nodeNeighbors, numEdges * 2 * sizeof(int), cudaMemcpyHostToDevice); cuda_err_check(err, __FILE__, __LINE__);
 
     int *d_currLevelNodes;
     int *numCurrLevelNodes;
@@ -308,13 +350,18 @@ int main (int argc, char ** argv){
     err = cudaMalloc((void**)&d_nodeVisited, numNodes * sizeof(int)); cuda_err_check(err, __FILE__, __LINE__);
     err = cudaMalloc((void**)&numCurrLevelNodes, sizeof(int)); cuda_err_check(err, __FILE__, __LINE__);
     
+    double sequential_time = sequential_bfs(numNodes, h_nodePtrs, h_nodeNeighbors);
     init_structures(numNodes, d_currLevelNodes, numCurrLevelNodes, d_nodeVisited);
     float global_time = kernel_launch(numNodes, d_nodePtrs, d_nodeNeighbors, d_currLevelNodes, numCurrLevelNodes, d_nodeVisited, true);
     init_structures(numNodes, d_currLevelNodes, numCurrLevelNodes, d_nodeVisited);
     float local_time = kernel_launch(numNodes, d_nodePtrs, d_nodeNeighbors, d_currLevelNodes, numCurrLevelNodes, d_nodeVisited, LWS, false);
-
+    
+    cout << "------------------------------------------------------------------" << endl;
+    cout << "Sequential time: " << sequential_time << " ms" << endl;
     cout << "Global queue time: " << global_time << " ms" << endl;
     cout << "Local queue time: " << local_time << " ms" << endl;
+    cout << "Speedup of global queue over sequential: " << sequential_time/global_time << endl;
+    cout << "Speedup of local queue over sequential: " << sequential_time/local_time << endl;
     cout << "Speedup of local queue over global queue: " << global_time/local_time << endl;
 
     err = cudaFree(d_nodePtrs); cuda_err_check(err, __FILE__, __LINE__);
@@ -322,6 +369,9 @@ int main (int argc, char ** argv){
     err = cudaFree(d_currLevelNodes); cuda_err_check(err, __FILE__, __LINE__);
     err = cudaFree(d_nodeVisited); cuda_err_check(err, __FILE__, __LINE__);
     err = cudaFree(numCurrLevelNodes); cuda_err_check(err, __FILE__, __LINE__);
+
+    free(h_nodePtrs);
+    free(h_nodeNeighbors);
 
     return 0;
 }

@@ -221,8 +221,6 @@ float kernel_launch (
     float milliseconds = 0;
     err = cudaEventElapsedTime(&milliseconds, start, stop); cuda_err_check(err, __FILE__, __LINE__);
 
-    cout << "Time used before kernel launch: " << milliseconds << " ms" << endl;
-
     float total_time = 0;
 
     int * d_nextLevelNodes = (int*)d_nextLevelNodes4;
@@ -269,7 +267,7 @@ float kernel_launch (
         // cout << endl;
     }
 
-    cout << "Total time taken for kernel execution: " << total_time << " ms" << endl;
+    // cout << "Total time taken for kernel execution: " << total_time << " ms" << endl;
 
     err = cudaFree(numNextLevelNodes); cuda_err_check(err, __FILE__, __LINE__);
     err = cudaFree(d_nextLevelNodes4); cuda_err_check(err, __FILE__, __LINE__);
@@ -320,8 +318,6 @@ int main (int argc, char ** argv){
         g[dst].push_back(src);
     }
     infile.close();
-
-    cout << "sizeof(int): " << sizeof(int) << " vs sizeof(int*) " << sizeof(int*) << endl;
 
     err = cudaMalloc((void**)&d_nodePtrs, (numNodes+1) * sizeof(int)); cuda_err_check(err, __FILE__, __LINE__);
     err = cudaMalloc((void**)&d_nodeNeighbors, numEdges * 2 * sizeof(int)); cuda_err_check(err, __FILE__, __LINE__);

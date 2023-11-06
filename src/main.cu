@@ -185,7 +185,7 @@ float kernel_launch (
     int numNodes, 
     int *d_nodePtrs, int *d_nodeNeighbors, 
     int *d_currLevelNodes, int * numCurrentLevelNodes, 
-    int *d_nodeVisited, int lws = LWS,
+    int *d_nodeVisited, int lws,
     bool use_global_queue = false
     ){
 
@@ -294,9 +294,17 @@ void init_structures (int numNodes, int *d_currLevelNodes, int *numCurrLevelNode
 }
 
 int main (int argc, char ** argv){
-    if (argc != 2){
-        cout << "Usage: " << argv[0] << " <graph_file>" << endl;
+    if (argc < 2){
+        cout << "Usage: " << argv[0] << " <graph_file> [-asym]" << endl;
         exit(1);
+    }
+
+    bool is_asymm = false;
+
+    if (argc == 3){
+        if (strcmp(argv[2], "-asym") == 0){
+            is_asymm = true;
+        }
     }
 
     int numNodes, numEdges;
@@ -305,25 +313,31 @@ int main (int argc, char ** argv){
     int *d_nodePtrs;
     int *d_nodeNeighbors;
 
-    
     Graph g;
     ifstream infile;
     infile.open(argv[1]);
+    // check if file is open
+    if (!infile.is_open()){
+        cout << "Could not open file " << argv[1] << endl;
+        exit(1);
+    }
     infile >> numNodes >> numEdges;
     g.resize(numNodes);
     for (int i = 0; i < numEdges; i++){
         int src, dst;
         infile >> src >> dst;
         g[src].push_back(dst);
-        g[dst].push_back(src);
+        if (!is_asymm) g[dst].push_back(src);
     }
     infile.close();
 
+    if (!is_asymm) numEdges *= 2;
+    
     err = cudaMalloc((void**)&d_nodePtrs, (numNodes+1) * sizeof(int)); cuda_err_check(err, __FILE__, __LINE__);
-    err = cudaMalloc((void**)&d_nodeNeighbors, numEdges * 2 * sizeof(int)); cuda_err_check(err, __FILE__, __LINE__);
+    err = cudaMalloc((void**)&d_nodeNeighbors, numEdges * sizeof(int)); cuda_err_check(err, __FILE__, __LINE__);
     
     int * h_nodePtrs = (int*)malloc((numNodes+1) * sizeof(int));
-    int * h_nodeNeighbors = (int*)malloc(numEdges * 2 * sizeof(int));
+    int * h_nodeNeighbors = (int*)malloc(numEdges * sizeof(int));
 
     int ptr = 0;
     for (int i = 0; i < numNodes; i++){
@@ -336,7 +350,7 @@ int main (int argc, char ** argv){
     h_nodePtrs[numNodes] = ptr;
 
     err = cudaMemcpy(d_nodePtrs, h_nodePtrs, (numNodes+1) * sizeof(int), cudaMemcpyHostToDevice); cuda_err_check(err, __FILE__, __LINE__);
-    err = cudaMemcpy(d_nodeNeighbors, h_nodeNeighbors, numEdges * 2 * sizeof(int), cudaMemcpyHostToDevice); cuda_err_check(err, __FILE__, __LINE__);
+    err = cudaMemcpy(d_nodeNeighbors, h_nodeNeighbors, numEdges * sizeof(int), cudaMemcpyHostToDevice); cuda_err_check(err, __FILE__, __LINE__);
 
     int *d_currLevelNodes;
     int *numCurrLevelNodes;
@@ -346,11 +360,15 @@ int main (int argc, char ** argv){
     err = cudaMalloc((void**)&d_nodeVisited, numNodes * sizeof(int)); cuda_err_check(err, __FILE__, __LINE__);
     err = cudaMalloc((void**)&numCurrLevelNodes, sizeof(int)); cuda_err_check(err, __FILE__, __LINE__);
     
-    double sequential_time = sequential_bfs(numNodes, h_nodePtrs, h_nodeNeighbors);
+    double sequential_time = 0;
+    float global_time = 0;
+    float local_time = 0;
+
+    sequential_time = sequential_bfs(numNodes, h_nodePtrs, h_nodeNeighbors);
     init_structures(numNodes, d_currLevelNodes, numCurrLevelNodes, d_nodeVisited);
-    float global_time = kernel_launch(numNodes, d_nodePtrs, d_nodeNeighbors, d_currLevelNodes, numCurrLevelNodes, d_nodeVisited, true);
+    global_time = kernel_launch(numNodes, d_nodePtrs, d_nodeNeighbors, d_currLevelNodes, numCurrLevelNodes, d_nodeVisited, LWS, true);
     init_structures(numNodes, d_currLevelNodes, numCurrLevelNodes, d_nodeVisited);
-    float local_time = kernel_launch(numNodes, d_nodePtrs, d_nodeNeighbors, d_currLevelNodes, numCurrLevelNodes, d_nodeVisited, LWS, false);
+    local_time = kernel_launch(numNodes, d_nodePtrs, d_nodeNeighbors, d_currLevelNodes, numCurrLevelNodes, d_nodeVisited, LWS, false);
     
     cout << "------------------------------------------------------------------" << endl;
     cout << "Sequential time: " << sequential_time << " ms" << endl;

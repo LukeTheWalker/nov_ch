@@ -5,9 +5,9 @@
 #include <fstream>
 #include <algorithm>
 
-#define LOCAL_QUEUE_SIZE 128
-#define PERSONAL_QUEUE_SIZE 64
-#define LWS 512
+#define LOCAL_QUEUE_SIZE 256
+#define PERSONAL_QUEUE_SIZE 128
+#define LWS 32
 
 using namespace std;
 using Graph = vector<vector<int> >;
@@ -58,11 +58,9 @@ __global__ void kernel (
                     personal_queue[personal_queue_size++] = neighbor;
                     continue;
                 }
-                if (*local_queue_size < LOCAL_QUEUE_SIZE){
-                    if ((index = atomicAdd_block(local_queue_size, 1)) < LOCAL_QUEUE_SIZE){
-                        local_queue[index] = neighbor;
-                        continue;
-                    }
+                if (*local_queue_size < LOCAL_QUEUE_SIZE && (index = atomicAdd_block(local_queue_size, 1)) < LOCAL_QUEUE_SIZE){
+                    local_queue[index] = neighbor;
+                    continue;
                 }
                 d_nextLevelNodes[atomicAdd(numNextLevelNodes, 1)] = neighbor;
             }
